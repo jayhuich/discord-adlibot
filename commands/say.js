@@ -1,6 +1,6 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { SlashCommandBuilder } = require('discord.js');
+const { SlashCommandBuilder, EmbedBuilder } = require('discord.js');
 const {
     joinVoiceChannel,
     createAudioResource,
@@ -12,7 +12,14 @@ const {
 } = require('@discordjs/voice');
 const say = require('say');
 
-let timeouts = [];
+// if no one uses connection for 30 secs, disconnect
+const DISCONNECT_TIMEOUT = 30_000;
+// each audio file will last at most 15 secs
+const UNSUBSCRIBE_TIMEOUT = 15_000;
+// if disconnected due to connectivity issues, try to reconnect every 5 secs
+const RECONNECT_INTERVAL = 5_000;
+// keeps track of the voice connection session of each guild
+let sessions = [];
 
 module.exports = {
     data: new SlashCommandBuilder()
@@ -22,8 +29,8 @@ module.exports = {
             .setDescription('the text to be converted')
             .setRequired(true)),
     async execute(client, interaction) {
-        
-        // user not in channel
+
+        // member not in channel
         if (!interaction.member.voice.channelId) {
             return interaction.reply({
                 content: `join a voice channel first!`,
@@ -40,70 +47,101 @@ module.exports = {
         const dialogPath = path.join(tempPath, `dialog_${timestamp}.mp3`);
         say.export(dialog, null, 1, dialogPath, err => { if (err) return console.error(err); })
         console.log(`speech '${dialog}' has been saved to '${dialogPath}'.`);
-        const resource = createAudioResource(dialogPath);
+        const resource = createAudioResource(dialogPath, {
+            metadata: { title: dialog }
+        });
 
         // create player
-        client.player = createAudioPlayer({
+        const getAudioPlayer = (guildId) => {
+            let session = sessions.find(session => session.g == guildId);
+            return session ? session.p : null;
+        }
+        const player = getAudioPlayer(interaction.guildId) || createAudioPlayer({
             behaviors: { noSubscriber: NoSubscriberBehavior.Stop }
-        });
-        client.player.on('error', err => { if (err) console.error(err) });
+        })
+            .on('stateChange', (oldState, newState) => {
+                console.log(`[${interaction.guildId}] player: ${oldState.status} => ${newState.status}`);
+                if (newState.status == AudioPlayerStatus.Idle) {
+                    if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { recursive: true, force: true }, err => console.error(err));
+                }
+            })
+            .on('error', err => { if (err) console.error(err) });
 
         // create connection
+        const playConnection = async (connection, player, resource) => {
+            // set/reset timeout for the current session
+            sessions = sessions.filter(session => session.c.state.status != VoiceConnectionStatus.Destroyed);
+            let session = sessions.find(session => session.g == interaction.guildId);
+            if (session) {
+                session.t.refresh();
+                if (session.l == interaction.member) session.e.data.description += `\n\`> ${dialog}\``;
+                else session.e.data.description += `\n\`${interaction.member.displayName}:\`\n\`> ${dialog}\``;
+                session.l = interaction.member;
+                await session.m.edit({ embeds: [session.e] });
+                console.log('sessions: ', sessions.map(x => x.g));
+            }
+            else {
+                // create embed
+                const embed = new EmbedBuilder()
+                    .setTitle('conversation log:')
+                    .setAuthor({
+                        name: interaction.guild.name,
+                        iconURL: interaction.guild.iconURL({ dynamic: true })
+                    })
+                    .setDescription(`\`${interaction.member.displayName}:\n> ${dialog}\``)
+                    .setTimestamp()
+                console.log(interaction.member.toString().length)
+                let timeout = setTimeout(() => {
+                    connection.disconnect();
+                }, DISCONNECT_TIMEOUT);
+                await interaction.channel.send({ embeds: [embed] }).then((message) => {
+                    sessions.push({
+                        g: interaction.guildId,
+                        t: timeout,
+                        c: connection,
+                        p: player,
+                        e: embed,
+                        m: message,
+                        l: interaction.member
+                    });
+                    console.log('sessions: ', sessions.map(session => session.g));
+                })
+            }
+
+            // connect audio resource to player
+            const subscription = connection.subscribe(player);
+            if (subscription) {
+                player.play(resource);
+                setTimeout(() => subscription.unsubscribe(), UNSUBSCRIBE_TIMEOUT);
+            }
+        }
         const connection = getVoiceConnection(interaction.guildId) || joinVoiceChannel({
             channelId: interaction.member.voice.channelId,
             guildId: interaction.guildId,
             adapterCreator: interaction.guild.voiceAdapterCreator
         })
+            .on('stateChange', (oldState, newState) => {
+                console.log(`[${interaction.guildId}] connection: ${oldState.status} => ${newState.status}`)
+            })
             // first time ready
             .on(VoiceConnectionStatus.Ready, () => {
-                console.log(`[${interaction.guildId}] connection: ${connection.state.status}`);
-                connectionReady(connection);
+                playConnection(connection, player, resource);
             })
             .on(VoiceConnectionStatus.Disconnected, async () => {
                 try {
                     // unintentional disconnect, reconnecting
                     await Promise.race([
-                        entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-                        entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+                        entersState(connection, VoiceConnectionStatus.Signalling, RECONNECT_INTERVAL),
+                        entersState(connection, VoiceConnectionStatus.Connecting, RECONNECT_INTERVAL),
                     ]);
                 } catch (error) {
                     // intentional disconnect
-                    console.log(`[${interaction.guildId}] connection: ${connection.state.status}`);
                     connection.destroy();
                 }
             });
-        const connectionReady = (connection) => {
-            // set/reset timeout for the current connection
-            timeouts = timeouts.filter(timeout => timeout.c.state.status != VoiceConnectionStatus.Destroyed);
-            let timeout = timeouts.find(timeout => timeout.g == interaction.guildId);
-            if (timeout) { timeout.t.refresh(); }
-            else {
-                timeout = setTimeout(() => {
-                    connection.disconnect();
-                }, 20000);
-                timeouts.push({
-                    g: interaction.guildId,
-                    t: timeout,
-                    c: connection
-                });
-            }
-
-            // connect audio resource to player
-            const subscription = connection.subscribe(client.player);
-            if (subscription) {
-                client.player.play(resource);
-                setTimeout(() => subscription.unsubscribe(), 10_000);
-                client.player.on('stateChange', (oldState, newState) => {
-                    console.log(`[${interaction.guildId}] player: ${oldState.status} => ${newState.status}`);
-                    if (newState.status == AudioPlayerStatus.Idle) {
-                        if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { recursive: true, force: true }, err => console.error(err));
-                    }
-                });
-            }
-        }
 
         // for calls with established connections
-        if (connection.state.status == VoiceConnectionStatus.Ready) connectionReady(connection);
+        if (connection.state.status == VoiceConnectionStatus.Ready) playConnection(connection, player, resource);
 
         await interaction.reply({
             content: `you said: ${dialog}`,

@@ -2,7 +2,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { Routes } = require('discord.js');
 const { REST } = require('@discordjs/rest');
-const { clientId, devGuildId, familyGuildId, token } = require('./config.json');
+const token = process.env.TOKEN || require('./config.json').token;
+const clientId = process.env.CLIENT_ID || require('./config.json').clientId;
+const devGuildId = process.env.DEV_GUILD_ID || require('./config.json').devGuildId;
+const familyGuildId = process.env.FAMILY_GUILD_ID || require('./config.json').familyGuildId;
 
 const commands = [], devCommands = [], familyCommands = [];
 const commandsPath = path.join(__dirname, 'commands');

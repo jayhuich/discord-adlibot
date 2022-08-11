@@ -31,6 +31,12 @@ module.exports = {
             .setDescription('the text to be converted')
             .setRequired(true)),
     async execute(client, interaction) {
+        if (process.env.TOKEN) {
+            return interaction.reply({
+                content: `the server i'm hosted on doesn't support text-to-speech!`,
+                ephemeral: true
+            }).catch((err) => { console.error(err) });
+        }
 
         // member not in channel
         if (!interaction.member.voice.channelId) {

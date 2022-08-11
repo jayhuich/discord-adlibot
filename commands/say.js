@@ -16,6 +16,8 @@ const say = require('say');
 const DISCONNECT_TIMEOUT = 30_000;
 // each audio file will last at most 15 secs
 const UNSUBSCRIBE_TIMEOUT = 15_000;
+// interaction reply will last for 5 secs
+const REPLY_TIMEOUT = 5_000;
 // if disconnected due to connectivity issues, try to reconnect every 5 secs
 const RECONNECT_INTERVAL = 5_000;
 // keeps track of the voice connection session of each guild
@@ -35,7 +37,7 @@ module.exports = {
             return interaction.reply({
                 content: `join a voice channel first!`,
                 ephemeral: true
-            }).catch(console.error);
+            }).catch((err) => { console.error(err) });
         }
 
         // create audio file of dialog and set as resource
@@ -45,8 +47,12 @@ module.exports = {
         const timestamp = new Date().getTime();
         const dialog = interaction.options.getString('dialog');
         const dialogPath = path.join(tempPath, `dialog_${timestamp}.mp3`);
-        say.export(dialog, null, 1, dialogPath, err => { if (err) return console.error(err); })
+        say.export(dialog, null, 1, dialogPath, err => { if (err) return console.error(err); });
         console.log(`speech '${dialog}' has been saved to '${dialogPath}'.`);
+
+        /** @todo: find a better way to wait for say.js to finish exporting file */
+        while (!fs.existsSync(dialogPath));
+
         const resource = createAudioResource(dialogPath, {
             metadata: { title: dialog }
         });
@@ -61,9 +67,8 @@ module.exports = {
         })
             .on('stateChange', (oldState, newState) => {
                 console.log(`[${interaction.guildId}] player: ${oldState.status} => ${newState.status}`);
-                if (newState.status == AudioPlayerStatus.Idle) {
-                    if (fs.existsSync(tempPath)) fs.rmSync(tempPath, { recursive: true, force: true }, err => console.error(err));
-                }
+                if (newState.status == AudioPlayerStatus.Idle && fs.existsSync(tempPath))
+                    fs.rmSync(tempPath, { recursive: true, force: true }, err => console.error(err));
             })
             .on('error', err => { if (err) console.error(err) });
 
@@ -78,7 +83,6 @@ module.exports = {
                 else session.e.data.description += `\n\`${interaction.member.displayName}:\`\n\`> ${dialog}\``;
                 session.l = interaction.member;
                 await session.m.edit({ embeds: [session.e] });
-                console.log('sessions: ', sessions.map(x => x.g));
             }
             else {
                 // create embed
@@ -89,8 +93,7 @@ module.exports = {
                         iconURL: interaction.guild.iconURL({ dynamic: true })
                     })
                     .setDescription(`\`${interaction.member.displayName}:\n> ${dialog}\``)
-                    .setTimestamp()
-                console.log(interaction.member.toString().length)
+                    .setTimestamp();
                 let timeout = setTimeout(() => {
                     connection.disconnect();
                 }, DISCONNECT_TIMEOUT);
@@ -111,7 +114,8 @@ module.exports = {
             // connect audio resource to player
             const subscription = connection.subscribe(player);
             if (subscription) {
-                player.play(resource);
+                try { player.play(resource); }
+                catch (err) { console.error(err) };
                 setTimeout(() => subscription.unsubscribe(), UNSUBSCRIBE_TIMEOUT);
             }
         }
@@ -120,12 +124,10 @@ module.exports = {
             guildId: interaction.guildId,
             adapterCreator: interaction.guild.voiceAdapterCreator
         })
+            // first time ready
+            .once(VoiceConnectionStatus.Ready, () => { playConnection(connection, player, resource); })
             .on('stateChange', (oldState, newState) => {
                 console.log(`[${interaction.guildId}] connection: ${oldState.status} => ${newState.status}`)
-            })
-            // first time ready
-            .on(VoiceConnectionStatus.Ready, () => {
-                playConnection(connection, player, resource);
             })
             .on(VoiceConnectionStatus.Disconnected, async () => {
                 try {
@@ -143,9 +145,8 @@ module.exports = {
         // for calls with established connections
         if (connection.state.status == VoiceConnectionStatus.Ready) playConnection(connection, player, resource);
 
-        await interaction.reply({
-            content: `you said: ${dialog}`,
-            ephemeral: true
-        }).catch(console.error);
+        await interaction.reply({ content: `message: ${dialog}` })
+            .then(() => setTimeout(() => interaction.deleteReply().catch((err) => console.error(err)), REPLY_TIMEOUT))
+            .catch((err) => { console.error(err) });
     }
 };

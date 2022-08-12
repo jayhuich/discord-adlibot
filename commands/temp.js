@@ -5,7 +5,8 @@ module.exports = {
     data: new SlashCommandBuilder()
         .setName('temp')
         .setDescription('shows temperature in kowloon city'),
-    async execute(client, interaction) {
+        
+    async execute(interaction) {
         let temp = '';
         await fetch('https://data.weather.gov.hk/weatherAPI/opendata/weather.php?dataType=rhrread&lang=en')
             .then((response) => response.json())

@@ -1,10 +1,10 @@
 module.exports = {
     name: 'interactionCreate',
-    execute(client, interaction) {
+    execute(interaction) {
         if (!interaction.isChatInputCommand()) return;
         const command = interaction.client.commands.get(interaction.commandName);
         if (!command) return;
-        try { command.execute(client, interaction); }
+        try { command.execute(interaction); }
         catch (error) {
             console.error(error);
             interaction.reply({

@@ -11,6 +11,7 @@ const {
     VoiceConnectionStatus
 } = require('@discordjs/voice');
 const say = require('say');
+const clientId = process.env.CLIENT_ID || require('../config.json').clientId;
 
 // if no one uses connection for 30 secs, disconnect
 const DISCONNECT_TIMEOUT = 30_000;
@@ -30,20 +31,34 @@ module.exports = {
         .addStringOption(option => option.setName('dialog')
             .setDescription('the text to be converted')
             .setRequired(true)),
-    async execute(client, interaction) {
-        if (process.env.TOKEN) {
-            return interaction.reply({
-                content: `the server i'm hosted on doesn't support text-to-speech!`,
-                ephemeral: true
-            }).catch((err) => { console.error(err) });
-        }
 
+    async execute(interaction) {
+
+        const member = interaction.member;
+        const errorCommand = interaction.client.commands.get('error');
+        // being hosted on heroku server
+        if (process.env.TOKEN) {
+            try { errorCommand.execute(interaction, `the server i'm being hosted on doesn't support this function!`); }
+            catch (err) { console.error(err); }
+            return;
+        }
         // member not in channel
-        if (!interaction.member.voice.channelId) {
-            return interaction.reply({
-                content: `join a voice channel first!`,
-                ephemeral: true
-            }).catch((err) => { console.error(err) });
+        if (!member.voice.channelId) {
+            try { errorCommand.execute(interaction, `join a voice channel first!`); }
+            catch (err) { console.error(err); }
+            return;
+        }
+        // cannot join or speak
+        if (!member.voice.channel.joinable || !member.voice.channel.speakable) {
+            try { errorCommand.execute(interaction, `i can't talk in your channel!`); }
+            catch (err) { console.error(err); }
+            return;
+        }
+        // member in afk channel
+        if (member.voice.channelId == interaction.guild.afkChannelId) {
+            try { errorCommand.execute(interaction, `you might be afk, but i'm not`); }
+            catch (err) { console.error(err); }
+            return;
         }
 
         // create audio file of dialog and set as resource
@@ -78,16 +93,15 @@ module.exports = {
             })
             .on('error', err => { if (err) console.error(err) });
 
-        // create connection
         const playConnection = async (connection, player, resource) => {
             // set/reset timeout for the current session
             sessions = sessions.filter(session => session.c.state.status != VoiceConnectionStatus.Destroyed);
             let session = sessions.find(session => session.g == interaction.guildId);
             if (session) {
                 session.t.refresh();
-                if (session.l == interaction.member) session.e.data.description += `\n\`> ${dialog}\``;
-                else session.e.data.description += `\n\`${interaction.member.displayName}:\`\n\`> ${dialog}\``;
-                session.l = interaction.member;
+                if (session.l == member) session.e.data.description += `\n\`> ${dialog}\``;
+                else session.e.data.description += `\n\`${member.displayName}:\`\n\`> ${dialog}\``;
+                session.l = member;
                 await session.m.edit({ embeds: [session.e] });
             }
             else {
@@ -98,7 +112,7 @@ module.exports = {
                         name: interaction.guild.name,
                         iconURL: interaction.guild.iconURL({ dynamic: true })
                     })
-                    .setDescription(`\`${interaction.member.displayName}:\n> ${dialog}\``)
+                    .setDescription(`\`${member.displayName}:\`\n\`> ${dialog}\``)
                     .setTimestamp();
                 let timeout = setTimeout(() => {
                     connection.disconnect();
@@ -111,7 +125,7 @@ module.exports = {
                         p: player,
                         e: embed,
                         m: message,
-                        l: interaction.member
+                        l: member
                     });
                     console.log('sessions: ', sessions.map(session => session.g));
                 })
@@ -125,8 +139,12 @@ module.exports = {
                 setTimeout(() => subscription.unsubscribe(), UNSUBSCRIBE_TIMEOUT);
             }
         }
+
+        // create connection
+        const existingConnection = getVoiceConnection(interaction.guildId);
+        if (existingConnection && !member.voice.channel.members.find(e => e.id == clientId)) { existingConnection.disconnect(); }
         const connection = getVoiceConnection(interaction.guildId) || joinVoiceChannel({
-            channelId: interaction.member.voice.channelId,
+            channelId: member.voice.channelId,
             guildId: interaction.guildId,
             adapterCreator: interaction.guild.voiceAdapterCreator
         })
@@ -152,7 +170,7 @@ module.exports = {
         if (connection.state.status == VoiceConnectionStatus.Ready) playConnection(connection, player, resource);
 
         await interaction.reply({ content: `message: ${dialog}` })
-            .then(() => setTimeout(() => interaction.deleteReply().catch((err) => console.error(err)), REPLY_TIMEOUT))
-            .catch((err) => { console.error(err) });
+            .then(() => setTimeout(() => interaction.deleteReply().catch(err => console.error(err)), REPLY_TIMEOUT))
+            .catch(err => console.error(err));
     }
 };

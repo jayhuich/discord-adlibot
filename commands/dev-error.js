@@ -8,7 +8,7 @@ module.exports = {
             .setDescription('error message')),
             
     async execute(interaction, err) {
-        let errString = interaction.options.getString('err') || err || '/';
+        const errString = interaction.options.getString('err') || err || '/';
         return interaction.reply({ content: errString, ephemeral: true });
     }
 };
